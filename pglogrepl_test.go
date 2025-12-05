@@ -1,10 +1,14 @@
 package pglogrepl_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -390,6 +394,150 @@ func TestBaseBackup(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// Wrap any io.Writer to give it a no-op Close() so it satisfies writeCloser.
+type nopCloser struct {
+	io.Writer
+}
+
+func (n nopCloser) Close() error {
+	return nil
+}
+
+func TestBaseBackupManifest(t *testing.T) {
+	// base backup test could take a long time. Therefore it can be disabled.
+	envSkipTest := os.Getenv("PGLOGREPL_SKIP_BASE_BACKUP")
+	if envSkipTest != "" {
+		skipTest, err := strconv.ParseBool(envSkipTest)
+		require.NoError(t, err)
+		if skipTest {
+			t.Skip("PGLOGREPL_SKIP_BASE_BACKUP=true, skipping base backup test")
+		}
+	}
+
+	// Use timeout so the test cannot hang forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, err := pgconn.Connect(ctx, os.Getenv("PGLOGREPL_TEST_CONN_STRING"))
+	require.NoError(t, err)
+	defer closeConn(t, conn)
+
+	_, err = pglogrepl.StartBaseBackup(ctx, conn, pglogrepl.BaseBackupOptions{
+		Label:         "pglogrepltest",
+		Progress:      false,
+		Fast:          true,
+		WAL:           false,
+		NoWait:        true,
+		MaxRate:       0,
+		TablespaceMap: true,
+		Manifest:      true,
+	})
+	require.NoError(t, err)
+
+	// Generalized writer interface for "current stream target".
+	type writeCloser interface {
+		io.Writer
+		io.Closer
+	}
+
+	var (
+		curTarget   writeCloser
+		manifestBuf bytes.Buffer
+	)
+
+	closeCurrent := func() {
+		if curTarget == nil {
+			return
+		}
+		require.NoError(t, curTarget.Close())
+		curTarget = nil
+	}
+
+	for {
+		msg, err := conn.ReceiveMessage(ctx)
+		require.NoError(t, err)
+
+		switch m := msg.(type) {
+		case *pgproto3.CopyOutResponse:
+			// nothing interesting here
+			continue
+
+		case *pgproto3.CopyData:
+			switch m.Data[0] {
+			case 'n':
+				// New file header (tar member)
+				closeCurrent()
+
+				filename, rest, err := readCString(m.Data[1:])
+				require.NoError(t, err)
+
+				tsPath, _, err := readCString(rest)
+				require.NoError(t, err)
+
+				if !strings.Contains(filename, "base") {
+					assert.Greater(t, len(tsPath), 1)
+				}
+
+				bbTar := strings.TrimPrefix(filename, "./")
+
+				// Still write backup files to temp, but we don't care about contents in this test.
+				f, err := os.CreateTemp("", "*-"+bbTar)
+				require.NoError(t, err)
+				curTarget = f
+
+			case 'd':
+				// File or manifest data
+				require.NotNil(t, curTarget, "received data but no active writer")
+
+				_, err := curTarget.Write(m.Data[1:])
+				require.NoError(t, err)
+
+			case 'm':
+				// Switch to manifest stream -> write into buffer instead of a file.
+				closeCurrent()
+				manifestBuf.Reset()
+				curTarget = nopCloser{Writer: &manifestBuf}
+
+			case 'p':
+				// only if Progress: true (we disabled Progress above)
+
+			default:
+				// unexpected data type – fail fast so we don't spin forever
+				t.Fatalf("unexpected CopyData message type: %q", m.Data[0])
+			}
+
+		case *pgproto3.CopyDone:
+			// backup stream complete
+			closeCurrent()
+
+			_, err := pglogrepl.FinishBaseBackup(ctx, conn)
+			require.NoError(t, err)
+
+			// assert manifest is meaningful
+
+			// 1) non-empty
+			manStr := strings.TrimSpace(manifestBuf.String())
+			require.NotEmpty(t, manStr, "manifest should not be empty")
+
+			// 2) valid json with some keys
+			var manifestJSON map[string]any
+			err = json.Unmarshal(manifestBuf.Bytes(), &manifestJSON)
+			require.NoError(t, err, "manifest must be valid JSON")
+			require.NotEmpty(t, manifestJSON, "manifest JSON must have at least one key")
+
+			// 3) expect keys
+			_, hasVersion := manifestJSON["PostgreSQL-Backup-Manifest-Version"]
+			assert.True(t, hasVersion, "manifest should contain 'PostgreSQL-Backup-Manifest-Version' field")
+
+			return
+
+		default:
+			// For this test, any other message is unexpected; better to fail than hang.
+			t.Fatalf("unexpected message type: %T", msg)
+		}
+	}
+}
+
 func TestSendStandbyStatusUpdate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
@@ -403,4 +551,13 @@ func TestSendStandbyStatusUpdate(t *testing.T) {
 
 	err = pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{WALWritePosition: sysident.XLogPos})
 	require.NoError(t, err)
+}
+
+//nolint:gocritic
+func readCString(buf []byte) (string, []byte, error) {
+	idx := bytes.IndexByte(buf, 0)
+	if idx < 0 {
+		return "", nil, fmt.Errorf("invalid CString: %q", string(buf))
+	}
+	return string(buf[:idx]), buf[idx+1:], nil
 }
