@@ -13,6 +13,7 @@ import (
 	"database/sql/driver"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -393,6 +394,19 @@ type BaseBackupOptions struct {
 	// Disable checksums being verified during a base backup.
 	// Note that NoVerifyChecksums=true is only supported since PG11
 	NoVerifyChecksums bool
+	// When this option is specified with a value of yes or force-encode, a backup manifest is created and sent along with the backup.
+	// The manifest is a list of every file present in the backup with the exception of any WAL files that may be included.
+	// It also stores the size, last modification time, and optionally a checksum for each file.
+	// A value of force-encode forces all filenames to be hex-encoded; otherwise, this type of encoding is performed only for files whose names are non-UTF8 octet sequences.
+	// force-encode is intended primarily for testing purposes, to be sure that clients which read the backup manifest can handle this case.
+	// For compatibility with previous releases, the default is MANIFEST 'no'.
+	Manifest string
+	// Specifies the checksum algorithm that should be applied to each file included in the backup manifest.
+	// Currently, the available algorithms are NONE, CRC32C, SHA224, SHA256, SHA384, and SHA512. The default is CRC32C.
+	ManifestChecksums string
+	// Requests an incremental backup.
+	// The UPLOAD_MANIFEST command must be executed before running a base backup with this option.
+	Incremental bool
 }
 
 func (bbo BaseBackupOptions) sql(serverVersion int) string {
@@ -431,6 +445,17 @@ func (bbo BaseBackupOptions) sql(serverVersion int) string {
 			parts = append(parts, "VERIFY_CHECKSUMS false")
 		} else if serverVersion >= 11 {
 			parts = append(parts, "NOVERIFY_CHECKSUMS")
+		}
+	}
+	if bbo.Manifest != "" {
+		parts = append(parts, "MANIFEST yes")
+		if bbo.ManifestChecksums != "" {
+			parts = append(parts, fmt.Sprintf("MANIFEST_CHECKSUMS %s", bbo.ManifestChecksums))
+		}
+	}
+	if serverVersion >= 17 {
+		if bbo.Incremental {
+			parts = append(parts, "INCREMENTAL")
 		}
 	}
 	if serverVersion >= 15 {
@@ -648,6 +673,15 @@ func FinishBaseBackup(ctx context.Context, conn *pgconn.PgConn) (result BaseBack
 		return
 	}
 	return
+}
+
+func UploadManifest(ctx context.Context, conn *pgconn.PgConn, r io.Reader) error {
+	// The server replies with CopyIn; CopyFrom will stream and send CopyDone for us.
+	// If the manifest is big, r can be a streaming reader from your storage.
+	if _, err := conn.CopyFrom(ctx, r, "UPLOAD_MANIFEST"); err != nil {
+		return fmt.Errorf("UPLOAD_MANIFEST: %w", err)
+	}
+	return nil
 }
 
 type PrimaryKeepaliveMessage struct {
