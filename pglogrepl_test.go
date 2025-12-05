@@ -414,7 +414,7 @@ func TestBaseBackupManifest(t *testing.T) {
 	defer closeConn(t, conn)
 
 	manifestData := streamBB(ctx, t, conn, false)
-	require.Greater(t, 1, len(manifestData))
+	require.Greater(t, len(manifestData), 1)
 }
 
 func TestBaseBackupIncremental(t *testing.T) {
@@ -445,7 +445,7 @@ func TestBaseBackupIncremental(t *testing.T) {
 
 	// create basebackup
 	manifestData := streamBB(ctx, t, conn, false)
-	require.Greater(t, 1, len(manifestData))
+	require.Greater(t, len(manifestData), 1)
 	manifestRdr := io.NopCloser(bytes.NewReader([]byte(manifestData)))
 
 	// create incremental backup
@@ -454,7 +454,7 @@ func TestBaseBackupIncremental(t *testing.T) {
 	require.NoError(t, err)
 	// 2) streaming incremental backup
 	manifestDataIncremental := streamBB(ctx, t, conn, true)
-	require.Greater(t, 1, len(manifestDataIncremental))
+	require.Greater(t, len(manifestDataIncremental), 1)
 }
 
 func TestSendStandbyStatusUpdate(t *testing.T) {
