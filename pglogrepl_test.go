@@ -394,15 +394,6 @@ func TestBaseBackup(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// Wrap any io.Writer to give it a no-op Close() so it satisfies writeCloser.
-type nopCloser struct {
-	io.Writer
-}
-
-func (n nopCloser) Close() error {
-	return nil
-}
-
 func TestBaseBackupManifest(t *testing.T) {
 	// base backup test could take a long time. Therefore it can be disabled.
 	envSkipTest := os.Getenv("PGLOGREPL_SKIP_BASE_BACKUP")
@@ -422,7 +413,100 @@ func TestBaseBackupManifest(t *testing.T) {
 	require.NoError(t, err)
 	defer closeConn(t, conn)
 
-	_, err = pglogrepl.StartBaseBackup(ctx, conn, pglogrepl.BaseBackupOptions{
+	manifestData := streamBB(ctx, t, conn, false)
+	require.Greater(t, 1, len(manifestData))
+}
+
+func TestBaseBackupIncremental(t *testing.T) {
+	// base backup test could take a long time. Therefore it can be disabled.
+	envSkipTest := os.Getenv("PGLOGREPL_SKIP_BASE_BACKUP")
+	if envSkipTest != "" {
+		skipTest, err := strconv.ParseBool(envSkipTest)
+		require.NoError(t, err)
+		if skipTest {
+			t.Skip("PGLOGREPL_SKIP_BASE_BACKUP=true, skipping base backup test")
+		}
+	}
+
+	// Use timeout so the test cannot hang forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, err := pgconn.Connect(ctx, os.Getenv("PGLOGREPL_TEST_CONN_STRING"))
+	require.NoError(t, err)
+	defer closeConn(t, conn)
+
+	// skip when major version < 17
+	serverVersion, err := serverMajorVersion(conn)
+	require.NoError(t, err)
+	if serverVersion < 17 {
+		t.Skip()
+	}
+
+	// create basebackup
+	manifestData := streamBB(ctx, t, conn, false)
+	require.Greater(t, 1, len(manifestData))
+	manifestRdr := io.NopCloser(bytes.NewReader([]byte(manifestData)))
+
+	// create incremental backup
+	// 1) upload manifest
+	err = pglogrepl.UploadManifest(ctx, conn, manifestRdr)
+	require.NoError(t, err)
+	// 2) streaming incremental backup
+	manifestDataIncremental := streamBB(ctx, t, conn, true)
+	require.Greater(t, 1, len(manifestDataIncremental))
+}
+
+func TestSendStandbyStatusUpdate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	conn, err := pgconn.Connect(ctx, os.Getenv("PGLOGREPL_TEST_CONN_STRING"))
+	require.NoError(t, err)
+	defer closeConn(t, conn)
+
+	sysident, err := pglogrepl.IdentifySystem(ctx, conn)
+	require.NoError(t, err)
+
+	err = pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{WALWritePosition: sysident.XLogPos})
+	require.NoError(t, err)
+}
+
+// Helpers
+
+//nolint:gocritic
+func readCString(buf []byte) (string, []byte, error) {
+	idx := bytes.IndexByte(buf, 0)
+	if idx < 0 {
+		return "", nil, fmt.Errorf("invalid CString: %q", string(buf))
+	}
+	return string(buf[:idx]), buf[idx+1:], nil
+}
+
+// Wrap any io.Writer to give it a no-op Close() so it satisfies writeCloser.
+type nopCloser struct {
+	io.Writer
+}
+
+// Generalized writer interface for "current stream target".
+type writeCloser interface {
+	io.Writer
+	io.Closer
+}
+
+func (n nopCloser) Close() error {
+	return nil
+}
+
+func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incremental bool) string {
+	t.Helper()
+
+	var (
+		curTarget   writeCloser
+		manifestBuf bytes.Buffer
+	)
+
+	_, err := pglogrepl.StartBaseBackup(ctx, conn, pglogrepl.BaseBackupOptions{
 		Label:         "pglogrepltest",
 		Progress:      false,
 		Fast:          true,
@@ -431,19 +515,9 @@ func TestBaseBackupManifest(t *testing.T) {
 		MaxRate:       0,
 		TablespaceMap: true,
 		Manifest:      true,
+		Incremental:   incremental,
 	})
 	require.NoError(t, err)
-
-	// Generalized writer interface for "current stream target".
-	type writeCloser interface {
-		io.Writer
-		io.Closer
-	}
-
-	var (
-		curTarget   writeCloser
-		manifestBuf bytes.Buffer
-	)
 
 	closeCurrent := func() {
 		if curTarget == nil {
@@ -529,7 +603,7 @@ func TestBaseBackupManifest(t *testing.T) {
 			_, hasVersion := manifestJSON["PostgreSQL-Backup-Manifest-Version"]
 			assert.True(t, hasVersion, "manifest should contain 'PostgreSQL-Backup-Manifest-Version' field")
 
-			return
+			return manifestBuf.String()
 
 		default:
 			// For this test, any other message is unexpected; better to fail than hang.
@@ -538,26 +612,11 @@ func TestBaseBackupManifest(t *testing.T) {
 	}
 }
 
-func TestSendStandbyStatusUpdate(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	defer cancel()
-
-	conn, err := pgconn.Connect(ctx, os.Getenv("PGLOGREPL_TEST_CONN_STRING"))
-	require.NoError(t, err)
-	defer closeConn(t, conn)
-
-	sysident, err := pglogrepl.IdentifySystem(ctx, conn)
-	require.NoError(t, err)
-
-	err = pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{WALWritePosition: sysident.XLogPos})
-	require.NoError(t, err)
-}
-
-//nolint:gocritic
-func readCString(buf []byte) (string, []byte, error) {
-	idx := bytes.IndexByte(buf, 0)
-	if idx < 0 {
-		return "", nil, fmt.Errorf("invalid CString: %q", string(buf))
+func serverMajorVersion(conn *pgconn.PgConn) (int, error) {
+	verString := conn.ParameterStatus("server_version")
+	dot := strings.IndexByte(verString, '.')
+	if dot == -1 {
+		return 0, fmt.Errorf("bad server version string: '%s'", verString)
 	}
-	return string(buf[:idx]), buf[idx+1:], nil
+	return strconv.Atoi(verString[:dot])
 }
