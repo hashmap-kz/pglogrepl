@@ -413,8 +413,9 @@ func TestBaseBackupManifest(t *testing.T) {
 	require.NoError(t, err)
 	defer closeConn(t, conn)
 
-	manifestData := streamBB(ctx, t, conn, false)
+	manifestData, filesWritten := streamBB(ctx, t, conn, false)
 	require.Greater(t, len(manifestData), 1)
+	require.Greater(t, filesWritten, 2) // manifest + base
 }
 
 func TestBaseBackupIncremental(t *testing.T) {
@@ -444,17 +445,27 @@ func TestBaseBackupIncremental(t *testing.T) {
 	}
 
 	// create basebackup
-	manifestData := streamBB(ctx, t, conn, false)
+	manifestData, filesWritten := streamBB(ctx, t, conn, false)
 	require.Greater(t, len(manifestData), 1)
+	require.Greater(t, filesWritten, 2) // manifest + base
 	manifestRdr := io.NopCloser(bytes.NewReader([]byte(manifestData)))
+
+	for _, f := range filesWritten {
+		t.Logf("base. written file: %s\n", f)
+	}
 
 	// create incremental backup
 	// 1) upload manifest
 	err = pglogrepl.UploadManifest(ctx, conn, manifestRdr)
 	require.NoError(t, err)
 	// 2) streaming incremental backup
-	manifestDataIncremental := streamBB(ctx, t, conn, true)
+	manifestDataIncremental, filesWritten := streamBB(ctx, t, conn, true)
 	require.Greater(t, len(manifestDataIncremental), 1)
+	require.Greater(t, filesWritten, 2) // manifest + base
+
+	for _, f := range filesWritten {
+		t.Logf("incremental. written file: %s\n", f)
+	}
 }
 
 func TestSendStandbyStatusUpdate(t *testing.T) {
@@ -498,12 +509,14 @@ func (n nopCloser) Close() error {
 	return nil
 }
 
-func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incremental bool) string {
+func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incremental bool) (string, []string) {
 	t.Helper()
 
 	var (
-		curTarget   writeCloser
-		manifestBuf bytes.Buffer
+		curTarget     writeCloser
+		curTargetName string
+		manifestBuf   bytes.Buffer
+		filesWritten  []string
 	)
 
 	_, err := pglogrepl.StartBaseBackup(ctx, conn, pglogrepl.BaseBackupOptions{
@@ -523,6 +536,7 @@ func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incrementa
 		if curTarget == nil {
 			return
 		}
+		filesWritten = append(filesWritten, curTargetName)
 		require.NoError(t, curTarget.Close())
 		curTarget = nil
 	}
@@ -558,6 +572,7 @@ func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incrementa
 				f, err := os.CreateTemp("", "*-"+bbTar)
 				require.NoError(t, err)
 				curTarget = f
+				curTargetName = filename
 
 			case 'd':
 				// File or manifest data
@@ -571,6 +586,7 @@ func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incrementa
 				closeCurrent()
 				manifestBuf.Reset()
 				curTarget = nopCloser{Writer: &manifestBuf}
+				curTargetName = "manifest"
 
 			case 'p':
 				// only if Progress: true (we disabled Progress above)
@@ -603,7 +619,7 @@ func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incrementa
 			_, hasVersion := manifestJSON["PostgreSQL-Backup-Manifest-Version"]
 			assert.True(t, hasVersion, "manifest should contain 'PostgreSQL-Backup-Manifest-Version' field")
 
-			return manifestBuf.String()
+			return manifestBuf.String(), filesWritten
 
 		default:
 			// For this test, any other message is unexpected; better to fail than hang.
