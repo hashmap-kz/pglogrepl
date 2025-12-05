@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -536,9 +537,12 @@ func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incrementa
 		if curTarget == nil {
 			return
 		}
-		filesWritten = append(filesWritten, curTargetName)
+		if len(curTargetName) > 0 {
+			filesWritten = append(filesWritten, curTargetName)
+		}
 		require.NoError(t, curTarget.Close())
 		curTarget = nil
+		curTargetName = ""
 	}
 
 	for {
@@ -572,7 +576,7 @@ func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incrementa
 				f, err := os.CreateTemp("", "*-"+bbTar)
 				require.NoError(t, err)
 				curTarget = f
-				curTargetName = filename
+				curTargetName = filepath.ToSlash(f.Name())
 
 			case 'd':
 				// File or manifest data
@@ -586,7 +590,6 @@ func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incrementa
 				closeCurrent()
 				manifestBuf.Reset()
 				curTarget = nopCloser{Writer: &manifestBuf}
-				curTargetName = "manifest"
 
 			case 'p':
 				// only if Progress: true (we disabled Progress above)
@@ -609,6 +612,13 @@ func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incrementa
 			manStr := strings.TrimSpace(manifestBuf.String())
 			require.NotEmpty(t, manStr, "manifest should not be empty")
 
+			// save for inspecting
+			f, err := os.CreateTemp(os.TempDir(), "manifest")
+			require.NoError(t, err)
+			_, err = f.Write(manifestBuf.Bytes())
+			require.NoError(t, err)
+			filesWritten = append(filesWritten, filepath.ToSlash(f.Name()))
+
 			// 2) valid json with some keys
 			var manifestJSON map[string]any
 			err = json.Unmarshal(manifestBuf.Bytes(), &manifestJSON)
@@ -618,6 +628,11 @@ func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incrementa
 			// 3) expect keys
 			_, hasVersion := manifestJSON["PostgreSQL-Backup-Manifest-Version"]
 			assert.True(t, hasVersion, "manifest should contain 'PostgreSQL-Backup-Manifest-Version' field")
+
+			// 4) check incremental
+			if incremental {
+				assert.True(t, strings.Contains(manStr, "INCREMENTAL"))
+			}
 
 			return manifestBuf.String(), filesWritten
 
