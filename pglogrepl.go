@@ -448,9 +448,9 @@ func (bbo BaseBackupOptions) sql(serverVersion int) string {
 		}
 	}
 	if bbo.Manifest != "" {
-		parts = append(parts, "MANIFEST yes")
+		parts = append(parts, "MANIFEST 'yes'")
 		if bbo.ManifestChecksums != "" {
-			parts = append(parts, fmt.Sprintf("MANIFEST_CHECKSUMS %s", bbo.ManifestChecksums))
+			parts = append(parts, fmt.Sprintf("MANIFEST_CHECKSUMS '%s'", bbo.ManifestChecksums))
 		}
 	}
 	if serverVersion >= 17 {
