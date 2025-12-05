@@ -415,7 +415,7 @@ func TestBaseBackupManifest(t *testing.T) {
 
 	manifestData, filesWritten := streamBB(ctx, t, conn, false)
 	require.Greater(t, len(manifestData), 1)
-	require.Greater(t, len(filesWritten), 2) // manifest + base
+	require.GreaterOrEqual(t, len(filesWritten), 2) // manifest + base
 }
 
 func TestBaseBackupIncremental(t *testing.T) {
@@ -447,7 +447,7 @@ func TestBaseBackupIncremental(t *testing.T) {
 	// create basebackup
 	manifestData, filesWritten := streamBB(ctx, t, conn, false)
 	require.Greater(t, len(manifestData), 1)
-	require.Greater(t, len(filesWritten), 2) // manifest + base
+	require.GreaterOrEqual(t, len(filesWritten), 2) // manifest + base
 	manifestRdr := io.NopCloser(bytes.NewReader([]byte(manifestData)))
 
 	for _, f := range filesWritten {
@@ -461,7 +461,7 @@ func TestBaseBackupIncremental(t *testing.T) {
 	// 2) streaming incremental backup
 	manifestDataIncremental, filesWritten := streamBB(ctx, t, conn, true)
 	require.Greater(t, len(manifestDataIncremental), 1)
-	require.Greater(t, len(filesWritten), 2) // manifest + base
+	require.GreaterOrEqual(t, len(filesWritten), 2) // manifest + base
 
 	for _, f := range filesWritten {
 		t.Logf("incremental. written file: %s\n", f)
