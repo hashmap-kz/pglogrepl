@@ -414,6 +414,12 @@ func TestBaseBackupManifest(t *testing.T) {
 	require.NoError(t, err)
 	defer closeConn(t, conn)
 
+	serverVersion, err := serverMajorVersion(conn)
+	require.NoError(t, err)
+	if serverVersion < 15 {
+		t.Skip("backup manifest framing via CopyData subtypes is PG15+; PG13/14 stream raw tar")
+	}
+
 	manifestData, filesWritten := streamBB(ctx, t, conn, false)
 	require.Greater(t, len(manifestData), 1)
 	require.GreaterOrEqual(t, len(filesWritten), 2) // manifest + base
