@@ -451,6 +451,9 @@ func TestBaseBackupIncremental(t *testing.T) {
 		t.Skip()
 	}
 
+	// incremental requires WAL summarization
+	requireSummarizeWalOn(ctx, t, conn)
+
 	// create basebackup
 	manifestData, filesWritten := streamBB(ctx, t, conn, false)
 	require.Greater(t, len(manifestData), 1)
@@ -661,4 +664,19 @@ func serverMajorVersion(conn *pgconn.PgConn) (int, error) {
 		return 0, fmt.Errorf("bad server version string: '%s'", verString)
 	}
 	return strconv.Atoi(verString[:dot])
+}
+
+func requireSummarizeWalOn(ctx context.Context, t *testing.T, conn *pgconn.PgConn) {
+	t.Helper()
+
+	rr := conn.Exec(ctx, "SHOW summarize_wal")
+	res, err := rr.ReadAll()
+	require.NoError(t, err)
+	require.NotEmpty(t, res)
+	require.Greater(t, len(res[0].Rows), 0)
+
+	val := strings.TrimSpace(string(res[0].Rows[0][0])) // first row, first column
+	if val != "on" {
+		t.Skipf("summarize_wal=%q; start postgres with -c summarize_wal=on (required for incremental base backups)", val)
+	}
 }
