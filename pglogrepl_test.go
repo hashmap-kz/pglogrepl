@@ -561,6 +561,10 @@ func streamBB(ctx context.Context, t *testing.T, conn *pgconn.PgConn, incrementa
 			continue
 
 		case *pgproto3.CopyData:
+			if len(m.Data) == 0 {
+				t.Logf("skip empty CopyData")
+				continue
+			}
 			switch m.Data[0] {
 			case 'n':
 				// New file header (tar member)
