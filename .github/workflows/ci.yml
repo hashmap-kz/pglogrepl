@@ -2,9 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [master]
   pull_request:
-    branches: [master]
+  workflow_dispatch:
+
+# on:
+#   push:
+#     branches: [master]
+#   pull_request:
+#     branches: [master]
 
 jobs:
   test:
@@ -13,12 +18,17 @@ jobs:
     strategy:
       matrix:
         # minimum and latest version of Go
-        go-version: ["1.21", "1.24"]
+        go-version: ["1.21", "1.25"]
         # all supported versions of Postgres
-        pg-version: [13, 14, 15, 16, 17]
+        pg-version: [13, 14, 15, 16, 17, 18]
       fail-fast: false
     env:
       PGLOGREPL_TEST_CONN_STRING: "postgres://pglogrepl:secret@127.0.0.1/pglogrepl?replication=database"
+      POSTGRES_VERSION: ${{ matrix.pg-version }}
+      POSTGRES_COMMAND: >-
+        ${{ matrix.pg-version >= 17
+            && 'postgres -c wal_level=logical -c max_wal_senders=10 -c max_replication_slots=10'
+            || 'postgres -c wal_level=replica -c max_wal_senders=10 -c max_replication_slots=10 -c summarize_wal=on' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -32,3 +42,6 @@ jobs:
           POSTGRES_VERSION: ${{ matrix.pg-version }}
       - name: Run tests
         run: go test -v -race ./...
+      - name: Tear down
+        if: always()
+        run: docker compose down -v postgres
