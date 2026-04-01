@@ -13,22 +13,37 @@ jobs:
     strategy:
       matrix:
         # minimum and latest version of Go
-        go-version: ["1.21", "1.24"]
+        go-version: ["1.25", "1.26"]
         # all supported versions of Postgres
-        pg-version: [13, 14, 15, 16, 17]
+        pg-version: [13, 14, 15, 16, 17, 18]
       fail-fast: false
     env:
       PGLOGREPL_TEST_CONN_STRING: "postgres://pglogrepl:secret@127.0.0.1/pglogrepl?replication=database"
+      POSTGRES_VERSION: ${{ matrix.pg-version }}
+      POSTGRES_COMMAND: >-
+        ${{ matrix.pg-version >= 17
+            && '-c wal_level=logical -c max_wal_senders=10 -c max_replication_slots=10 -c summarize_wal=on'
+            || '-c wal_level=logical -c max_wal_senders=10 -c max_replication_slots=10' }}
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
       - name: Set up Go ${{ matrix.go-version }}
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go-version }}
+          cache: false
+      - name: Debug rendered compose config
+        run: |
+          echo "matrix.pg-version=${{ matrix.pg-version }}"
+          echo "POSTGRES_VERSION=$POSTGRES_VERSION"
+          printf 'POSTGRES_COMMAND=%s\n' "$POSTGRES_COMMAND"
+          docker compose config
       - name: Stand up Postgres ${{ matrix.pg-version }}
         run: docker compose up -d postgres
         env:
           POSTGRES_VERSION: ${{ matrix.pg-version }}
       - name: Run tests
         run: go test -v -race ./...
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
