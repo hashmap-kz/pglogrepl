@@ -43,7 +43,7 @@ jobs:
           printf 'POSTGRES_COMMAND=%s\n' "$POSTGRES_COMMAND"
           docker compose config
       - name: Stand up Postgres ${{ matrix.pg-version }}
-        run: docker compose up -d postgres
+        run: docker compose up -d --force-recreate postgres
         env:
           POSTGRES_VERSION: ${{ matrix.pg-version }}
       - name: Run tests
