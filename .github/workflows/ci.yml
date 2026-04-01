@@ -36,7 +36,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go-version }}
-          cache: true
+          cache: false
       - name: Debug rendered compose config
         run: |
           echo "matrix.pg-version=${{ matrix.pg-version }}"
