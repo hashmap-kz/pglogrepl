@@ -36,6 +36,12 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: ${{ matrix.go-version }}
+      - name: Debug rendered compose config
+        run: |
+          echo "matrix.pg-version=${{ matrix.pg-version }}"
+          echo "POSTGRES_VERSION=$POSTGRES_VERSION"
+          printf 'POSTGRES_COMMAND=%s\n' "$POSTGRES_COMMAND"
+          docker compose config
       - name: Stand up Postgres ${{ matrix.pg-version }}
         run: docker compose up -d postgres
         env:
@@ -44,4 +50,4 @@ jobs:
         run: go test -v -race ./...
       - name: Tear down
         if: always()
-        run: docker compose down -v postgres
+        run: docker compose down -v
