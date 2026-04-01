@@ -448,6 +448,7 @@ func TestBaseBackupIncremental(t *testing.T) {
 	serverVersion, err := serverMajorVersion(conn)
 	require.NoError(t, err)
 	if serverVersion < 17 {
+		t.Logf("server version: %d\n", serverVersion)
 		t.Skip()
 	}
 
